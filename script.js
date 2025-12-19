@@ -1,5 +1,3 @@
-/* jshint loopfunc:true */
-
 const SIZE = 8;
 let board = [];
 let current = 1; // 1=玩家黑棋, 2=AI白棋
@@ -71,7 +69,7 @@ function computeScore() {
     return { b, w };
 }
 
-// ===== 渲染棋盤 =====
+// ===== 渲染棋盤（只渲染棋子，不重建棋盤以保動畫） =====
 function render() {
     boardEl.innerHTML = "";
     const moves = getLegalMoves(current);
@@ -95,7 +93,7 @@ function render() {
                 hint.className = "hint";
                 hint.textContent = moves.get(key).length;
                 cell.appendChild(hint);
-                cell.onclick = () => onCellClick(r, c, moves.get(key));
+                cell.onclick = () => playerMove(r, c, moves.get(key));
             } else {
                 cell.classList.add("disabled");
             }
@@ -111,26 +109,105 @@ function render() {
     checkForEndOrPass();
 }
 
-// ===== 落子事件 =====
-function onCellClick(r, c, flips) {
-    board[r][c] = current;
-    for (const [rr, cc] of flips) board[rr][cc] = current;
-    current = current === 1 ? 2 : 1;
+// ===== 玩家落子 =====
+async function playerMove(r, c, flips) {
+    await placePieceWithAnimation(r, c, flips, current);
+    current = 2;
     render();
+    aiTurn();
+}
 
-    // AI 回合
-    if (current === 2) {
-        const aiMoves = getLegalMoves(2);
-        if (aiMoves.size > 0) {
-            setTimeout(() => {
-                if (aiLevelEl.value === "easy") aiEasyMove();
-                else aiHardMove();
-            }, 400);
-        } else {
-            // AI 無法下子時直接跳過
-            current = 1;
-            setTimeout(render, 300);
+// ===== AI 回合 =====
+async function aiTurn() {
+    const moves = getLegalMoves(2);
+    if (moves.size === 0) {
+        current = 1;
+        render();
+        return;
+    }
+
+    await new Promise(res => setTimeout(res, 400)); // 模擬思考
+
+    if (aiLevelEl.value === "easy") {
+        const arr = [...moves];
+        const [key, flips] = arr[Math.floor(Math.random() * arr.length)];
+        const [r, c] = key.split(",").map(Number);
+        await placePieceWithAnimation(r, c, flips, 2);
+    } else {
+        await aiHardMove();
+    }
+
+    current = 1;
+    render();
+}
+
+// ===== 放置棋子 + 翻轉動畫 =====
+async function placePieceWithAnimation(r, c, flips, player) {
+    // 放置新棋子
+    board[r][c] = player;
+    const cell = boardEl.children[r * SIZE + c];
+    const piece = document.createElement("div");
+    piece.className = "piece " + (player === 1 ? "black" : "white");
+    piece.style.transform = "rotateY(90deg)";
+    cell.appendChild(piece);
+
+    // 落子動畫
+    await new Promise(res => {
+        piece.animate([{ transform: "rotateY(90deg)" }, { transform: "rotateY(0deg)" }],
+            { duration: 300, fill: "forwards" }).onfinish = res;
+    });
+
+    // 翻轉對手棋子
+    for (const [rr, cc] of flips) {
+        const fcell = boardEl.children[rr * SIZE + cc];
+        const fpiece = fcell.querySelector(".piece");
+        if (!fpiece) continue;
+
+        await new Promise(res => {
+            fpiece.animate([{ transform: "rotateY(0deg)" }, { transform: "rotateY(90deg)" }],
+                { duration: 200, fill: "forwards" }).onfinish = () => {
+                // 中間換顏色
+                board[rr][cc] = player;
+                fpiece.className = "piece " + (player === 1 ? "black" : "white");
+                fpiece.animate([{ transform: "rotateY(90deg)" }, { transform: "rotateY(0deg)" }],
+                    { duration: 200, fill: "forwards" }).onfinish = res;
+            };
+        });
+    }
+}
+
+// ===== 困難 AI =====
+async function aiHardMove() {
+    const moves = getLegalMoves(2);
+    if (!moves.size) return;
+
+    let bestScore = -Infinity;
+    let bestMove = null;
+
+    for (const [key, flips] of moves) {
+        const [r, c] = key.split(",").map(Number);
+        let score = flips.length * 10;
+
+        if ((r === 0 && c === 0) || (r === 0 && c === SIZE-1) || (r === SIZE-1 && c === 0) || (r === SIZE-1 && c === SIZE-1)) {
+            score += 1000;
         }
+
+        if (r === 0 || r === SIZE-1 || c === 0 || c === SIZE-1) score += 50;
+
+        const backup = board.map(row => row.slice());
+        board[r][c] = 2;
+        for (const [rr, cc] of flips) board[rr][cc] = 2;
+        score -= getLegalMoves(1).size * 5;
+        board = backup;
+
+        if (score > bestScore) {
+            bestScore = score;
+            bestMove = [r, c, flips];
+        }
+    }
+
+    if (bestMove) {
+        await placePieceWithAnimation(bestMove[0], bestMove[1], bestMove[2], 2);
     }
 }
 
@@ -152,56 +229,9 @@ function checkForEndOrPass() {
     }
 }
 
-/* ===== AI ===== */
-
-// 簡單隨機模式
-function aiEasyMove() {
-    const moves = [...getLegalMoves(2)];
-    if (!moves.length) return;
-    const [key, flips] = moves[Math.floor(Math.random() * moves.length)];
-    const [r, c] = key.split(",").map(Number);
-    onCellClick(r, c, flips);
-}
-
-// 困難模式：角落優先 + 翻子數 + 行動力
-function aiHardMove() {
-    const moves = getLegalMoves(2);
-    if (!moves.size) return;
-
-    let bestScore = -Infinity;
-    let bestMove = null;
-
-    for (const [key, flips] of moves) {
-        const [r, c] = key.split(",").map(Number);
-        let score = flips.length * 10;
-
-        // 角落超高權重
-        if ((r === 0 && c === 0) || (r === 0 && c === SIZE-1) || (r === SIZE-1 && c === 0) || (r === SIZE-1 && c === SIZE-1)) {
-            score += 1000;
-        }
-
-        // 邊線加分
-        if (r === 0 || r === SIZE-1 || c === 0 || c === SIZE-1) score += 50;
-
-        // 模擬落子減少玩家行動力
-        const backup = board.map(row => row.slice());
-        board[r][c] = 2;
-        for (const [rr, cc] of flips) board[rr][cc] = 2;
-        const opponentMoves = getLegalMoves(1).size;
-        score -= opponentMoves * 5;
-        board = backup;
-
-        if (score > bestScore) {
-            bestScore = score;
-            bestMove = [r, c, flips];
-        }
-    }
-
-    if (bestMove) onCellClick(bestMove[0], bestMove[1], bestMove[2]);
-}
-
-// ===== 重新開始按鈕 =====
+// ===== 重新開始 =====
 restartBtn.onclick = initBoard;
 
 // ===== 初始啟動 =====
 initBoard();
+
